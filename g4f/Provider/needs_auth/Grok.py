@@ -8,7 +8,7 @@ import uuid
 from typing import Dict, Any, AsyncIterator
 
 try:
-    import nodriver
+    import zendriver as nodriver
 except ImportError:
     pass
 
@@ -92,19 +92,33 @@ class Grok(AsyncAuthedProvider, ProviderModelMixin):
             while True:
                 if has_headers:
                     break
-                textarea = await page.select("textarea", 180)
-                await textarea.send_keys("Hello")
-                await asyncio.sleep(1)
-                button = await page.select("button[type='submit']")
-                if button:
-                    await button.click()
+                input_element = None
+                try:
+                    input_element = await page.select("div.ProseMirror", 2)
+                except Exception:
+                    pass
+                if not input_element:
+                    try:
+                        input_element = await page.select("textarea", 180)
+                    except Exception:
+                        pass
+                if input_element:
+                    try:
+                        await input_element.click()
+                        await input_element.send_keys("Hello")
+                        await asyncio.sleep(0.5)
+                        submit_btn = await page.select("button[type='submit']", 2)
+                        if submit_btn:
+                            await submit_btn.click()
+                    except Exception:
+                        pass
                 await asyncio.sleep(1)
             auth_result.cookies = {}
             for c in await page.send(nodriver.cdp.network.get_cookies([cls.url])):
                 auth_result.cookies[c.name] = c.value
             await page.close()
         finally:
-            stop_browser()
+            await stop_browser()
         yield auth_result
 
     @classmethod

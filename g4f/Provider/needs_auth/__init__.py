@@ -1,4 +1,6 @@
+from .AIBadgr           import AIBadgr
 from .Anthropic         import Anthropic
+from .Antigravity       import Antigravity
 from .Azure             import Azure
 from .BingCreateImages  import BingCreateImages
 from .BlackboxPro       import BlackboxPro
@@ -16,7 +18,7 @@ from .Gemini            import Gemini
 from .GeminiPro         import GeminiPro
 from .GeminiCLI         import GeminiCLI
 from .GigaChat          import GigaChat
-from .GithubCopilot     import GithubCopilot
+from ..github           import GithubCopilot
 from .GithubCopilotAPI  import GithubCopilotAPI
 from .GlhfChat          import GlhfChat
 from .Grok              import Grok

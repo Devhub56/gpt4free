@@ -27,33 +27,57 @@ class GithubCopilot(AsyncGeneratorProvider, ProviderModelMixin):
     default_model = "gpt-4.1"
     
     models = [
-        # Fast and cost-efficient
-        "o3-mini",
-        "gemini-2.0-flash",
-        "o4-mini",  # Preview
+        # GPT-5 Series
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5.1",
+        "gpt-5.2",
         
-        # Versatile and highly intelligent  
+        # GPT-5 Codex (optimized for code)
+        "gpt-5-codex",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        
+        # GPT-4 Series
         "gpt-4.1",
-        "gpt-5-mini",  # Preview
-        "gpt-4o", 
-        "claude-3.5-sonnet",
+        "gpt-4.1-2025-04-14",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4o-2024-11-20",
+        "gpt-4o-2024-08-06",
+        "gpt-4o-2024-05-13",
+        "gpt-4o-mini-2024-07-18",
+        "gpt-4",
+        "gpt-4-0613",
+        "gpt-4-0125-preview",
+        "gpt-4-o-preview",
+        
+        # Claude 4 Series
+        "claude-opus-4.6",
+        "claude-opus-4.6-fast",
+        "claude-opus-4.5",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "claude-haiku-4.5",
+        
+        # Gemini Series
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
         "gemini-2.5-pro",
-        "claude-3.7-sonnet",
-        "claude-4-sonnet",
-        "o3",  # Preview
-        "gpt-5",  # Preview
         
-        # Most powerful at complex tasks
-        "claude-3.7-sonnet-thinking",
-        "claude-4-opus",
+        # Grok
+        "grok-code-fast-1",
         
-        # Preview (requires upgrade)
-        "claude-3.7-sonnet-pro",
-        "o1",
+        # Legacy GPT-3.5
+        "gpt-3.5-turbo",
+        "gpt-3.5-turbo-0613",
         
-        # Legacy models (for backward compatibility)
-        "o1-mini",
-        "o1-preview"
+        # Embeddings
+        "text-embedding-3-small",
+        "text-embedding-ada-002",
     ]
 
     @classmethod
@@ -131,7 +155,7 @@ class GithubCopilot(AsyncGeneratorProvider, ProviderModelMixin):
                 "streaming": stream,
                 "confirmations": [],
                 "customInstructions": [],
-                "model": api_model,
+                "model": model,
                 "mode": "immersive"
             }
             

@@ -17,7 +17,6 @@ from ...errors import VersionNotFoundError, MissingAuthError
 from ...image.copy_images import copy_media, ensure_media_dir, get_media_dir
 from ...image import get_width_height
 from ...tools.run_tools import iter_run_tools
-from ... import Provider
 from ...providers.base_provider import ProviderModelMixin
 from ...providers.retry_provider import BaseRetryProvider
 from ...providers.helper import format_media_prompt
@@ -25,6 +24,7 @@ from ...providers.response import *
 from ...providers.any_model_map import model_map
 from ...providers.any_provider import AnyProvider
 from ...client.service import get_model_and_provider
+from ... import Provider
 from ... import version, models
 from ... import debug
 
@@ -48,18 +48,20 @@ class Api:
         for model, providers in models.__models__.values()]
 
     @staticmethod
-    def get_provider_models(provider: str, api_key: str = None, api_base: str = None, ignored: list = None):
+    def get_provider_models(provider: str, api_key: str = None, ignored: list = None):
         def get_model_data(provider: ProviderModelMixin, model: str, default: bool = False) -> dict:
+            model_id = model.get("id") if isinstance(model, dict) else model
             return {
-                "model": model,
-                "label": model.split(":")[-1] if provider.__name__ == "AnyProvider" and not model.startswith("openrouter:") else model,
-                "default": default or model == provider.default_model,
-                "vision": model in provider.vision_models,
-                "audio": False if provider.audio_models is None else model in provider.audio_models,
-                "video": model in provider.video_models,
-                "image": model in provider.image_models,
-                "count": False if provider.models_count is None else provider.models_count.get(model),
-                "tags": [] if provider.models_tags is None else provider.models_tags.get(model, []),
+                "model": model_id,
+                "label": model_id.split(":")[-1] if provider.__name__ == "AnyProvider" and not model_id.startswith("openrouter:") else model_id,
+                "default": default or model_id == provider.default_model,
+                "vision": model_id in provider.vision_models,
+                "audio": False if provider.audio_models is None else model_id in provider.audio_models,
+                "video": model_id in provider.video_models,
+                "image": model_id in provider.image_models,
+                "count": False if provider.models_count is None else provider.models_count.get(model_id),
+                "tags": [] if provider.models_tags is None else provider.models_tags.get(model_id, []),
+                **(model if isinstance(model, dict) else {})
             }
         if provider in Provider.__map__:
             provider = Provider.__map__[provider]
@@ -67,19 +69,19 @@ class Api:
                 has_grouped_models = hasattr(provider, "get_grouped_models")
                 method = provider.get_grouped_models if has_grouped_models else provider.get_models
                 if "api_key" in signature(provider.get_models).parameters:
-                    models = method(api_key=api_key, api_base=api_base)
+                    models = method(api_key=api_key)
                 elif "ignored" in signature(provider.get_models).parameters:
                     models = method(ignored=ignored)
                 else:
                     models = method()
                 if has_grouped_models:
                     return [{
-                        "group": model["group"],
-                        "models": [get_model_data(provider, name) for name in model["models"]]
+                        "group": model.get("group"),
+                        "models": [get_model_data(provider, name) for name in (model.get("models", {}).values() if isinstance(model.get("models"), dict) else model.get("models", []))]
                     } for model in models]
                 return [
                     get_model_data(provider, model)
-                    for model in models
+                    for model in (models.values() if isinstance(models, dict) else models)
                 ]
         elif provider in model_map:
             return [get_model_data(AnyProvider, provider, True)]
@@ -98,7 +100,7 @@ class Api:
                 return True
         return [{
             "name": provider.__name__,
-            "label": provider.label if hasattr(provider, "label") else provider.__name__,
+            "label": getattr(provider, "label", provider.__name__),
             "parent": getattr(provider, "parent", None),
             "image": len(getattr(provider, "image_models", [])),
             "audio": len(getattr(provider, "audio_models", [])),
@@ -109,13 +111,14 @@ class Api:
             "active_by_default": False if provider.active_by_default is None else provider.active_by_default,
             "auth": provider.needs_auth,
             "login_url": getattr(provider, "login_url", None),
-            "live": provider.live
+            "live": provider.live,
+            "login": hasattr(provider, "login")
         } for provider in Provider.__providers__ if provider.working and safe_get_models(provider)]
 
     def get_all_models(self) -> dict[str, list]:
         def safe_get_provider_models(provider: ProviderModelMixin) -> list[str]:
             try:
-                return list(provider.get_models())
+                return list(provider.get_models(timeout=10))
             except Exception as e:
                 debug.error(f"{provider.__name__}: get_models error:", e)
                 return []
@@ -156,6 +159,8 @@ class Api:
         messages = kwargs.pop('messages', None)
         action = kwargs.get('action')
         if action == "continue":
+            if "tool_calls" not in kwargs:
+                kwargs["tool_calls"] = []
             kwargs["tool_calls"].append({
                 "function": {
                     "name": "continue_tool"
@@ -201,9 +206,11 @@ class Api:
             if hasattr(provider_handler, "get_parameters"):
                 yield self._format_json("parameters", provider_handler.get_parameters(as_json=True))
         try:
-            result = iter_run_tools(provider_handler, **{**kwargs, "model": model, "download_media": download_media})
+            result = iter_run_tools(provider_handler, **{**kwargs, "model": model, "download_media": download_media, "proxy": proxy})
             for chunk in result:
                 if isinstance(chunk, ProviderInfo):
+                    model = getattr(chunk, "model", model)
+                    provider = getattr(chunk, "provider", provider)
                     yield self.handle_provider(chunk, model)
                 elif isinstance(chunk, JsonConversation):
                     if provider is not None:
@@ -221,7 +228,7 @@ class Api:
                     yield self._format_json("preview", chunk.to_string(), urls=chunk.urls, alt=chunk.alt)
                 elif isinstance(chunk, MediaResponse):
                     media = chunk
-                    if download_media or chunk.get("cookies"):
+                    if download_media or chunk.get("cookies") or chunk.get("headers"):
                         chunk.alt = format_media_prompt(kwargs.get("messages"), chunk.alt)
                         width, height = get_width_height(chunk.get("width"), chunk.get("height"))
                         tags = [model, kwargs.get("aspect_ratio"), kwargs.get("resolution")]
@@ -253,14 +260,12 @@ class Api:
                     yield self._format_json("synthesize", chunk.get_dict())
                 elif isinstance(chunk, TitleGeneration):
                     yield self._format_json("title", chunk.title)
-                elif isinstance(chunk, RequestLogin):
-                    yield self._format_json("login", str(chunk))
                 elif isinstance(chunk, Parameters):
                     yield self._format_json("parameters", chunk.get_dict())
                 elif isinstance(chunk, FinishReason):
                     yield self._format_json("finish", chunk.get_dict())
                 elif isinstance(chunk, Usage):
-                    yield self._format_json("usage", chunk.get_dict())
+                    yield self._format_json("usage", chunk.get_dict(), model=model, provider=provider)
                 elif isinstance(chunk, Reasoning):
                     yield self._format_json("reasoning", **chunk.get_dict())
                 elif isinstance(chunk, YouTubeResponse):
@@ -272,7 +277,11 @@ class Api:
                 elif isinstance(chunk, DebugResponse):
                     yield self._format_json("log", chunk.log)
                 elif isinstance(chunk, ContinueResponse):
-                    yield self._format_json("continue", chunk.log)
+                    yield self._format_json("continue", chunk.text)
+                elif isinstance(chunk, VariantResponse):
+                    yield self._format_json("variant", chunk.text)
+                elif isinstance(chunk, ToolCalls):
+                    yield self._format_json("tool_calls", chunk.list)
                 elif isinstance(chunk, RawResponse):
                     yield self._format_json(chunk.type, **chunk.get_dict())
                 elif isinstance(chunk, JsonRequest):
@@ -281,6 +290,8 @@ class Api:
                     yield self._format_json("response", chunk.get_dict())
                 elif isinstance(chunk, PlainTextResponse):
                     yield self._format_json("response", chunk.text)
+                elif isinstance(chunk, HeadersResponse):
+                    yield self._format_json("headers", chunk.get_dict())
                 else:
                     yield self._format_json("content", str(chunk))
         except MissingAuthError as e:

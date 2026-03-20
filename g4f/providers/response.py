@@ -178,6 +178,9 @@ class HiddenResponse(ResponseType):
     def __str__(self) -> str:
         """Hidden responses return an empty string."""
         return ""
+    
+class HeadersResponse(HiddenResponse, ObjectMixin):
+    pass
 
 class JsonRequest(HiddenResponse, ObjectMixin):
     pass
@@ -204,6 +207,9 @@ class Usage(JsonMixin, HiddenResponse):
         input_tokens: int = None,
         output_tokens: int = None,
         output_tokens_details: Dict = None,
+        promptTokenCount: int = None,
+        candidatesTokenCount: int = None,
+        totalTokenCount: int = None,
         **kwargs
     ):
         if promptTokens is not None:
@@ -214,6 +220,12 @@ class Usage(JsonMixin, HiddenResponse):
             kwargs["prompt_tokens"] = input_tokens
         if output_tokens is not None:
             kwargs["completion_tokens"] = output_tokens
+        if promptTokenCount is not None:
+            kwargs["prompt_tokens"] = promptTokenCount
+        if candidatesTokenCount is not None:
+            kwargs["completion_tokens"] = candidatesTokenCount
+        if totalTokenCount is not None:
+            kwargs["total_tokens"] = totalTokenCount
         if output_tokens_details is not None:
             for key, value in output_tokens_details.items():
                 kwargs[key] = value
@@ -303,7 +315,7 @@ class Sources(ResponseType):
         if not self.list:
             return ""
         return "\n\n\n\n" + ("\n>\n".join([
-            f"> [{idx}] {format_link(link['url'], link.get('title', None))}"
+            f"> [{idx}] {format_link(link['url'], link.get('title', link.get('name', None)))}"
             for idx, link in enumerate(self.list)
         ]))
 
@@ -413,8 +425,8 @@ class ImageResponse(MediaResponse):
         """Return images as markdown."""
         if self.get("width") and self.get("height"):
             return "\n".join([
-                f'<a href="{html.escape(url)}" data-width="{self.get("width")}" data-height="{self.get("height")}" data-source="{html.escape(self.get("source_url", ""))}">'
-                + f'<img src="{url.replace("/media/", "/thumbnail/")}" alt="{html.escape(" ".join(self.alt.split()))}"></a>'
+                f'<a href="{html.escape(url)}" data-src="{self.get("image", url)}" data-width="{self.get("width")}" data-height="{self.get("height")}" data-source="{html.escape(self.get("source_url", ""))}">'
+                + f'<img src="{self.get("thumbnail", url.replace("/media/", "/thumbnail/"))}" alt="{html.escape(self.alt)}" width="{html.escape(str(self.get("thumbnail_width", "")))}" height="{html.escape(str(self.get("thumbnail_height", "")))}"></a>'
                 for url in self.get_list()
             ])
         return format_images_markdown(self.urls, self.alt, self.get("preview"))
@@ -442,7 +454,7 @@ class PreviewResponse(HiddenResponse):
 
     def to_string(self) -> str:
         """Return data as a string."""
-        return self.data
+        return "".join([str(item) for item in self.data]) if isinstance(self.data, list) else str(self.data)
 
 class Parameters(ResponseType, JsonMixin):
     def __str__(self) -> str:

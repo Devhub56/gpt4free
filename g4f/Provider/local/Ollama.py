@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import re
 import json
 import requests
 import os
+from typing import Optional
 
-from ..needs_auth.OpenaiAPI import OpenaiAPI
+from ..template import OpenaiTemplate
 from ...requests import StreamSession, raise_for_status
 from ...providers.response import Usage, Reasoning
+from ...cookies import get_cookies
 from ...tools.run_tools import AuthManager
 from ...typing import AsyncResult, Messages
+from ...config import AppConfig
+from ... import debug
 
-class Ollama(OpenaiAPI):
+class Ollama(OpenaiTemplate):
     label = "Ollama 🦙"
     url = "https://ollama.com"
+    base_url = "https://g4f.space/api/ollama"
     login_url = "https://ollama.com/settings/keys"
-    api_endpoint = "https://ollama.com/api/chat"
     needs_auth = False
     working = True
     active_by_default = True
@@ -25,22 +30,79 @@ class Ollama(OpenaiAPI):
     }
 
     @classmethod
-    def get_models(cls, api_key: str = None, api_base: str = None, **kwargs):
+    async def get_quota(cls, api_key: Optional[str] = None) -> Optional[dict]:
+        cookies = {}
+        if api_key:
+            cookies = {"__Secure-session": api_key}
+        else:
+            cookies = get_cookies("ollama.com", cache_result=False)
+        if not cookies:
+            return None
+        try:
+            async with StreamSession() as session:
+                async with session.get(
+                    "https://ollama.com/settings",
+                    cookies=cookies,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                ) as response:
+                    await raise_for_status(response)
+                    html = await response.text()
+                    lower = html.lower()
+                    has_sign_in = "sign in to ollama" in lower or "log in to ollama" in lower
+                    has_auth_endpoint = "/api/auth/signin" in lower or "/auth/signin" in lower or 'href="/signin"' in lower or 'href="/login"' in lower
+                    has_form = "<form" in lower
+                    has_password = 'type="password"' in lower or 'name="password"' in lower
+                    has_email = 'type="email"' in lower or 'name="email"' in lower
+                    if (has_sign_in and has_form and (has_email or has_password or has_auth_endpoint)) \
+                            or (has_form and has_auth_endpoint) \
+                            or (has_form and has_password and has_email):
+                        debug.error("Ollama session cookie is invalid or expired")
+                        return None
+                    quota = {}
+                    for label in ("Session usage", "Hourly usage", "Weekly usage"):
+                        idx = html.find(label)
+                        if idx == -1:
+                            continue
+                        section = html[idx + len(label):idx + len(label) + 800]
+                        pct_match = re.search(r'(\d+(?:\.\d+)?)%\s*used', section)
+                        if not pct_match:
+                            width_match = re.search(r'width:\s*(\d+(?:\.\d+)?)%', section)
+                            if width_match:
+                                pct_match = width_match
+                        pct = float(pct_match.group(1)) if pct_match else None
+                        reset_match = re.search(r'data-time=["\']([^"\']+)["\']', section)
+                        reset_time = reset_match.group(1) if reset_match else None
+                        key = label.lower().replace(" ", "_")
+                        quota[key] = {
+                            "used_percent": pct,
+                            "reset_time": reset_time,
+                        }
+                    if quota:
+                        return quota
+        except Exception as e:
+            debug.error(f"Failed to get Ollama quota:", e)
+        return None
+
+    @classmethod
+    def get_models(cls, api_key: str = None, base_url: str = None, **kwargs):
         if not cls.models:
             cls.models = []
-            if not api_key:
+            if not api_key or AppConfig.disable_custom_api_key:
                 api_key = AuthManager.load_api_key(cls)
-            if api_key:
-                models = requests.get("https://ollama.com/api/tags", {"headers": {"Authorization": f"Bearer {api_key}"}}).json()["models"]
-                if models:
-                    cls.live += 1
-                cls.models = [model["name"] for model in models]
-            if api_base is None:
-                host = os.getenv("OLLAMA_HOST", "127.0.0.1")
+            models = requests.get("https://ollama.com/api/tags").json()["models"]
+            if models:
+                cls.live += 1
+            cls.models = [model["name"] for model in models]
+            if base_url is None:
+                host = os.getenv("OLLAMA_HOST", "localhost")
                 port = os.getenv("OLLAMA_PORT", "11434")
                 url = f"http://{host}:{port}/api/tags"
             else:
-                url = api_base.replace("/v1", "/api/tags")
+                url = base_url.replace("/v1", "/api/tags")
             try:
                 models = requests.get(url).json()["models"]
             except requests.exceptions.RequestException as e:
@@ -48,7 +110,7 @@ class Ollama(OpenaiAPI):
             if cls.live == 0 and models:
                 cls.live += 1
             cls.local_models = [model["name"] for model in models]
-            cls.models = cls.models + cls.local_models
+            cls.models = cls.models.copy() + cls.local_models
             cls.default_model = next(iter(cls.models), None)
         return cls.models
 
@@ -58,38 +120,23 @@ class Ollama(OpenaiAPI):
         model: str,
         messages: Messages,
         api_key: str = None,
-        api_base: str = None,
-        proxy: str = None,
+        base_url: str = None,
         **kwargs
     ) -> AsyncResult:
-        if api_base is None:
-            host = os.getenv("OLLAMA_HOST", "localhost")
-            port = os.getenv("OLLAMA_PORT", "11434")
-            api_base: str = f"http://{host}:{port}/v1"
-        if model in cls.local_models or not api_key:
-            async for chunk in super().create_async_generator(
-                model, messages, api_base=api_base, proxy=proxy, **kwargs
-            ):
-                yield chunk
+        if not cls.models:
+            cls.get_models(api_key=api_key, base_url=base_url)
+        if model in cls.local_models:
+            if base_url is None:
+                host = os.getenv("OLLAMA_HOST", "localhost")
+                port = os.getenv("OLLAMA_PORT", "11434")
+                base_url: str = f"http://{host}:{port}/v1"
         else:
-            async with StreamSession(headers={"Authorization": f"Bearer {api_key}"}, proxy=proxy) as session:
-                async with session.post(cls.api_endpoint, json={
-                    "model": model,
-                    "messages": messages,
-                }) as response:
-                    await raise_for_status(response)
-                    last_data = {}
-                    async for chunk in response.iter_lines():
-                        data = json.loads(chunk)
-                        last_data = data
-                        thinking = data.get("message", {}).get("thinking", "")
-                        if thinking:
-                            yield Reasoning(thinking)
-                        content = data.get("message", {}).get("content", "")
-                        if content:
-                            yield content
-                    yield Usage(
-                        prompt_tokens=last_data.get("prompt_eval_count", 0),
-                        completion_tokens=last_data.get("eval_count", 0),
-                        total_tokens=last_data.get("prompt_eval_count", 0) + last_data.get("eval_count", 0),
-                    )
+            base_url = cls.backup_url
+        async for chunk in super().create_async_generator(
+            model,
+            messages,
+            api_key=api_key,
+            base_url=cls.backup_url,
+            **kwargs
+        ):
+            yield chunk

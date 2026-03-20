@@ -4,6 +4,12 @@ import re
 import json
 import uuid
 
+try:
+    import zendriver as nodriver
+    has_nodriver = True
+except ImportError:
+    has_nodriver = False
+
 from ...typing import AsyncResult, Messages, ImageType, Cookies
 from ..base_provider import AsyncGeneratorProvider, ProviderModelMixin
 from ..helper import format_prompt
@@ -88,7 +94,7 @@ class You(AsyncGeneratorProvider, ProviderModelMixin):
                         cookies[c.name] = c.value
                     await page.close()
                 finally:
-                    stop_browser()
+                    await stop_browser()
         async with StreamSession(
             proxy=proxy,
             impersonate="chrome",

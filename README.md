@@ -1,6 +1,6 @@
 # GPT4Free (g4f)
 
-[![PyPI](https://img.shields.io/pypi/v/g4f)](https://pypi.org/project/g4f) [![Docker Hub](https://img.shields.io/badge/docker-hlohaus789%2Fg4f-blue)](https://hub.docker.com/r/hlohaus789/g4f) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-red.svg)](https://www.gnu.org/licenses/gpl-3.0.txt)
+[![PyPI](https://img.shields.io/pypi/v/g4f)](https://pypi.org/project/g4f) [![Docker Hub](https://img.shields.io/badge/docker-hlohaus789%2Fg4f-blue)](https://hub.docker.com/r/hlohaus789/g4f) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-red.svg)](https://www.gnu.org/licenses/gpl-3.0.txt) [![PyPI Downloads](https://static.pepy.tech/personalized-badge/g4f?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/g4f)
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/7f60c240-00fa-4c37-bf7f-ae5cc20906a1" alt="GPT4Free logo" height="200" />
@@ -203,6 +203,52 @@ python -m g4f --port 8080 --debug
 ```bash
 python -m g4f.cli gui --port 8080 --debug
 ```
+
+### MCP Server
+GPT4Free now includes a Model Context Protocol (MCP) server that allows AI assistants like Claude to access web search, scraping, and image generation capabilities.
+
+**Starting the MCP server (stdio mode):**
+```bash
+# Using g4f command
+g4f mcp
+
+# Or using Python module
+python -m g4f.mcp
+```
+
+**Starting the MCP server (HTTP mode):**
+```bash
+# Start HTTP server on port 8765
+g4f mcp --http --port 8765
+
+# Custom host and port
+g4f mcp --http --host 127.0.0.1 --port 3000
+```
+
+HTTP mode provides:
+- `POST http://localhost:8765/mcp` - JSON-RPC endpoint
+- `GET http://localhost:8765/health` - Health check
+
+**Configuring with Claude Desktop:**
+
+Add to your `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "gpt4free": {
+      "command": "python",
+      "args": ["-m", "g4f.mcp"]
+    }
+  }
+}
+```
+
+**Available MCP Tools:**
+- `web_search` - Search the web using DuckDuckGo
+- `web_scrape` - Extract text content from web pages  
+- `image_generation` - Generate images from text prompts
+
+For detailed MCP documentation, see [g4f/mcp/README.md](g4f/mcp/README.md)
 
 ### Optional provider login (desktop within container)
 - Accessible at:

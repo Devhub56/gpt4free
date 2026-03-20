@@ -14,7 +14,7 @@ class HuggingFaceAPI(OpenaiTemplate):
     label = "HuggingFace (Text Generation)"
     parent = "HuggingFace"
     url = "https://api-inference.huggingface.com"
-    api_base = "https://api-inference.huggingface.co/v1"
+    base_url = "https://api-inference.huggingface.co/v1"
     working = True
     needs_auth = True
 
@@ -75,7 +75,7 @@ class HuggingFaceAPI(OpenaiTemplate):
         cls,
         model: str,
         messages: Messages,
-        api_base: str = None,
+        base_url: str = None,
         api_key: str = None,
         max_tokens: int = 2048,
         media: MediaListType = None,
@@ -89,8 +89,17 @@ class HuggingFaceAPI(OpenaiTemplate):
             raise ModelNotFoundError(f"Model is not supported: {model} in: {cls.__name__}")
         error = None
         for provider_key in provider_mapping:
-            api_path = "groq/openai/v1" if provider_key == "groq" else "novita/v3/openai" if provider_key == "novita" else f"{provider_key}/v1"
-            api_base = f"https://router.huggingface.co/{api_path}"
+            if provider_key == "zai-org":
+                api_path = "zai-org/api/paas/v4"
+            elif provider_key == "novita":
+                api_path = "novita/v3/openai"
+            elif provider_key == "groq":
+                api_path = "groq/openai/v1"
+            elif provider_key == "hf-inference":
+                api_path = f"{provider_key}/models/{model}/v1"
+            else:
+                api_path = f"{provider_key}/v1"
+            base_url = f"https://router.huggingface.co/{api_path}"
             task = provider_mapping[provider_key]["task"]
             if task != "conversational":
                 raise ModelNotFoundError(f"Model is not supported: {model} in: {cls.__name__} task: {task}")
@@ -107,7 +116,7 @@ class HuggingFaceAPI(OpenaiTemplate):
         #             messages = last_user_message
         #     debug.log(f"Messages trimmed from: {start} to: {calculate_lenght(messages)}")
             try:
-                async for chunk in super().create_async_generator(model, messages, api_base=api_base, api_key=api_key, max_tokens=max_tokens, media=media, **kwargs):
+                async for chunk in super().create_async_generator(model, messages, base_url=base_url, api_key=api_key, max_tokens=max_tokens, media=media, **kwargs):
                     if isinstance(chunk, ProviderInfo):
                         yield ProviderInfo(**{**chunk.get_dict(), "label": f"HuggingFace ({provider_key})"})
                     else:

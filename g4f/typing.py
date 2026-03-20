@@ -17,8 +17,10 @@ from typing import (
     Optional,
     TYPE_CHECKING,
 )
-from typing_extensions import TypedDict
-
+try:
+    from typing_extensions import TypedDict
+except ImportError:
+    from typing import TypedDict
 # Only import PIL for type-checkers; no runtime dependency required.
 if TYPE_CHECKING:
     from PIL.Image import Image as PILImage
@@ -85,7 +87,7 @@ __all__ = [
     "Message",
     "ContentPart",
     "Cookies",
-    "Image",
+    "PILImage",  # Changed from "Image" to "PILImage" to match the actual class name
     "ImageType",
     "MediaListType",
     "ResponseType",

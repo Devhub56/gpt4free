@@ -17,16 +17,15 @@ class ModelConfig:
 class YuppAPIClient:
     """Yupp API client for fetching model data"""
     
-    def __init__(self, config: ModelConfig = None, api_key: str = None):
+    def __init__(self, session, config: ModelConfig = None, api_key: str = None):
         self.config = config or ModelConfig()
-        self.session = requests.Session()
         self.api_key = api_key
-        self._setup_session()
+        self.session = session
+        self._set_cookies()
 
     def _setup_session(self) -> None:
         """Setup session with headers and cookies"""
         self.session.headers.update(self._get_headers())
-        self._set_cookies()
     
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers"""
@@ -224,9 +223,9 @@ class DataManager:
 class YuppModelManager:
     """Main manager class for Yupp model operations"""
     
-    def __init__(self, config: ModelConfig = None, api_key: str = None):
+    def __init__(self, session, config: ModelConfig = None, api_key: str = None):
         self.config = config or ModelConfig()
-        self.client = YuppAPIClient(config, api_key)
+        self.client = YuppAPIClient(session, self.config, api_key)
         self.processor = ModelProcessor()
         self.data_manager = DataManager()
     
@@ -260,34 +259,3 @@ class YuppModelManager:
         processed_models = self.processor.filter_and_process(data)
         
         return self.data_manager.save_data(processed_models, output_file)
-    
-    def run_interactive(self) -> bool:
-        """Run in interactive mode (for CLI use)"""
-        
-        print("=== Yupp Model Data Tool ===")
-        
-        if not self.has_valid_token():
-            print("Error: YUPP_TOKENS environment variable not set")
-            print("Please set YUPP_TOKENS environment variable, e.g.:")
-            print("export YUPP_TOKENS='your_token_here'")
-            return False
-        
-        return self.fetch_and_save_models()
-
-
-def main():
-    """Main entry point"""
-    manager = YuppModelManager()
-    success = manager.run_interactive()
-    
-    if success:
-        print("Operation completed successfully")
-    else:
-        print("Operation failed")
-        return 1
-    
-    return 0
-
-
-if __name__ == "__main__":
-    exit(main())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import flask
 import os
+import re
 import time
 import base64
 import logging
@@ -10,8 +11,10 @@ import asyncio
 import shutil
 import random
 import datetime
+import ipaddress
+import socket
 from hashlib import sha256
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from functools import lru_cache
 from flask import Flask, Response, redirect, request, jsonify, send_from_directory
 from werkzeug.exceptions import NotFound
@@ -21,7 +24,7 @@ from urllib.parse import quote_plus
 from hashlib import sha256
 
 try:
-    from PIL import Image 
+    from PIL import Image, UnidentifiedImageError
     has_pillow = True
 except ImportError:
     has_pillow = False
@@ -38,7 +41,7 @@ except ImportError:
 
 from ...client.service import convert_to_provider
 from ...providers.asyncio import to_sync_generator
-from ...providers.response import FinishReason, AudioResponse, MediaResponse, Reasoning, HiddenResponse
+from ...providers.response import FinishReason, AudioResponse, MediaResponse, Reasoning, HiddenResponse, JsonResponse
 from ...client.helper import filter_markdown
 from ...tools.files import supports_filename, get_streaming, get_bucket_dir, get_tempfile
 from ...tools.run_tools import iter_run_tools
@@ -50,9 +53,36 @@ from ...client.service import get_model_and_provider
 from ...providers.any_model_map import model_map
 from ... import Provider
 from ... import models
+from ...Provider import ProviderUtils
 from .api import Api
 
 logger = logging.getLogger(__name__)
+
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+def _is_safe_url(url: str) -> bool:
+    """Return True only for http/https URLs that do not point to private/loopback/reserved addresses."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname
+        if hostname is None:
+            return False
+        # Resolve all IP addresses for the hostname and reject if any is non-public.
+        # Validating all addresses reduces the window for DNS rebinding attacks.
+        addr_infos = socket.getaddrinfo(hostname, None)
+        if not addr_infos:
+            return False
+        for addr_info in addr_infos:
+            addr = ipaddress.ip_address(addr_info[4][0])
+            if (addr.is_private or addr.is_loopback or addr.is_link_local
+                    or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+                return False
+    except Exception as e:
+        logger.debug("URL safety check failed for %r: %s", url, e)
+        return False
+    return True
 
 def safe_iter_generator(generator: Generator) -> Generator:
     start = next(generator)
@@ -149,20 +179,61 @@ class Backend_Api(Api):
             response = self.get_providers(**kwargs)
             return jsonify(response)
 
-        def get_demo_models():
-            return [{
-                "name": model.name,
-                "image": isinstance(model, models.ImageModel),
-                "vision": isinstance(model, models.VisionModel),
-                "audio": isinstance(model, models.AudioModel),
-                "video": isinstance(model, models.VideoModel),
-                "providers": [
-                    provider.get_parent()
-                    for provider in providers
-                ],
-                "demo": True
-            }
-            for model, providers in models.demo_models.values()]
+        @app.route('/backend-api/v2/oauth/<provider>', methods=['GET', 'POST'])
+        def oauth_login(provider: str):
+            timeout = 300.0
+            if request.method == 'GET':
+                timeout = float(request.args.get('timeout') or timeout)
+            else:
+                try:
+                    data = request.get_json(silent=True) or {}
+                    timeout = float(data.get('timeout') or timeout)
+                except Exception:
+                    pass
+
+            # Resolve provider class
+            try:
+                provider_class = ProviderUtils.get_by_label(provider)
+            except ValueError as e:
+                return jsonify({"error": {"message": str(e)}}), 404
+
+            if request.method == 'GET':
+                data = request.args.to_dict() or {}
+            else:
+                data = request.get_json(silent=True) or {}
+
+            action = data.get("action", "start")
+
+            # Github Copilot device flow: start/poll actions
+            if hasattr(provider_class, "oauth_start") and action == "start":
+                try:
+                    result = asyncio.run(provider_class.oauth_start())
+                    return jsonify(result), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            if hasattr(provider_class, "oauth_poll") and action == "poll":
+                device_code = data.get("device_code")
+                if not device_code:
+                    return jsonify({"error": {"message": "device_code is required for poll action"}}), 400
+                try:
+                    result = asyncio.run(provider_class.oauth_poll(device_code))
+                    return jsonify(result), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            # Fallback: provider.login (blocking) for interactive login flows
+            if hasattr(provider_class, "login"):
+                try:
+                    asyncio.run(provider_class.login())
+                    return jsonify({"status": "success"}), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            return jsonify({"error": {"message": f"Provider {provider} does not support OAuth login"}}), 404
 
         def handle_conversation():
             """
@@ -180,8 +251,11 @@ class Backend_Api(Api):
             except json.JSONDecodeError as e:
                 logger.exception(e)
                 return jsonify({"error": {"message": "Invalid JSON data"}}), 400
+            for key in ["base_url", "proxy", "media"]:
+                if key in json_data:
+                    del json_data[key]  # Remove unsupported fields for security
             if app.demo and has_crypto:
-                secret = request.headers.get("x_secret")
+                secret = request.headers.get("x-secret", request.headers.get("x_secret"))
                 if not secret or not validate_secret(secret):
                     return jsonify({"error": {"message": "Invalid or missing secret"}}), 403
             tempfiles = []
@@ -194,6 +268,8 @@ class Backend_Api(Api):
                         media.append((Path(newfile), file.filename))
             if "media_url" in request.form:
                 for url in request.form.getlist("media_url"):
+                    if not _is_safe_url(url):
+                        return jsonify({"error": {"message": f"Invalid or disallowed media_url: {url}"}}), 400
                     media.append((url, None))
             if media:
                 json_data['media'] = media
@@ -246,9 +322,34 @@ class Backend_Api(Api):
     
         @app.route('/backend-api/v2/usage/<date>', methods=['GET'])
         def get_usage(date: str):
+            if not _DATE_RE.match(date):
+                return (jsonify({"error": {"message": "Invalid date format"}}), 400)
+            try:
+                datetime.date.fromisoformat(date)
+            except ValueError:
+                return (jsonify({"error": {"message": "Invalid date"}}), 400)
             cache_dir = Path(get_cookies_dir()) / ".usage"
             cache_file = cache_dir / f"{date}.jsonl"
-            return cache_file.read_text() if cache_file.exists() else (jsonify({"error": {"message": "No usage data found for this date"}}), 404)
+            if cache_file.exists():
+                return Response(cache_file.read_text(), mimetype='text/plain')
+            else:
+                return (jsonify({"error": {"message": "No usage data found for this date"}}), 404)
+
+        @app.route('/backend-api/v2/quota/<provider>', methods=['GET'])
+        async def get_quota(provider: str):
+            try:
+                provider_handler = convert_to_provider(provider)
+            except ProviderNotFoundError:
+                return "Provider not found", 404
+            if not hasattr(provider_handler, "get_quota"):
+                return "Provider doesn't support get_quota", 500
+            try:
+                response_data = await provider_handler.get_quota()
+                return jsonify(response_data)
+            except MissingAuthError as e:
+                return jsonify({"error": {"message": f"{type(e).__name__}: {e}"}}), 401
+            except Exception as e:
+                return jsonify({"error": {"message": f"{type(e).__name__}: {e}"}}), 500
 
         @app.route('/backend-api/v2/log', methods=['POST'])
         def add_log():
@@ -309,7 +410,7 @@ class Backend_Api(Api):
                     parameters["audio"] = {}
                 def cast_str(response):
                     buffer = next(response)
-                    while isinstance(buffer, (Reasoning, HiddenResponse)):
+                    while isinstance(buffer, (Reasoning, HiddenResponse, JsonResponse)):
                         buffer = next(response)
                     if isinstance(buffer, MediaResponse):
                         if len(buffer.get_list()) == 1:
@@ -328,7 +429,7 @@ class Backend_Api(Api):
                         for chunk in response:
                             if isinstance(chunk, FinishReason):
                                 yield f"[{chunk.reason}]" if chunk.reason != "stop" else ""
-                            elif not isinstance(chunk, Exception):
+                            elif not isinstance(chunk, (Exception, JsonResponse)):
                                 chunk = str(chunk)
                                 if chunk:
                                     yield chunk
@@ -344,10 +445,10 @@ class Backend_Api(Api):
                             response = f.read()
                     if not response:
                         response = iter_run_tools(provider_handler, **parameters)
-                        cache_dir.mkdir(parents=True, exist_ok=True)
                         response = cast_str(response)
                         response = response if isinstance(response, str) else "".join(response)
                         if response:
+                            cache_dir.mkdir(parents=True, exist_ok=True)
                             with cache_file.open("w") as f:
                                 f.write(response)
                 else:
@@ -356,11 +457,13 @@ class Backend_Api(Api):
                     if response.startswith("/media/"):
                         media_dir = get_media_dir()
                         filename = os.path.basename(response.split("?")[0])
-                        try:
-                            return send_from_directory(os.path.abspath(media_dir), filename)
-                        finally:
-                            if not cache_id:
+                        if not cache_id:
+                            try:
+                                return send_from_directory(os.path.abspath(media_dir), filename)
+                            finally:
                                 os.remove(os.path.join(media_dir, filename))
+                        else:
+                            return redirect(response)
                     elif response.startswith("https://") or response.startswith("http://"):
                         return redirect(response)
                 if do_filter:
@@ -378,7 +481,6 @@ class Backend_Api(Api):
                 logger.exception(e)
                 return jsonify({"error": {"message": f"{type(e).__name__}: {e}"}}), 500
 
-     
         @app.route('/backend-api/v2/files/<bucket_id>/stream', methods=['GET'])
         def stream_files(bucket_id: str, event_stream=True):
             return manage_files(bucket_id, event_stream)
@@ -438,7 +540,7 @@ class Backend_Api(Api):
                     os.remove(copyfile)
                     continue
                 if not is_media and result:
-                    with open(os.path.join(bucket_dir, f"{filename}.md"), 'w') as f:
+                    with open(os.path.join(bucket_dir, f"{filename}.md"), 'w', encoding="utf-8") as f:
                         f.write(f"{result}\n")
                     filenames.append(f"{filename}.md")
                 if is_media:
@@ -452,7 +554,10 @@ class Backend_Api(Api):
                             image_size = {"width": width, "height": height}
                             thumbnail_dir = os.path.join(bucket_dir, "thumbnail")
                             os.makedirs(thumbnail_dir, exist_ok=True)
-                            process_image(image, save=os.path.join(thumbnail_dir, filename))
+                            width, height = process_image(image, save=os.path.join(thumbnail_dir, filename))
+                            image_size = {"width": width, "height": height}
+                        except UnidentifiedImageError:
+                            pass
                         except Exception as e:
                             logger.exception(e)
                     if result:
@@ -472,7 +577,7 @@ class Backend_Api(Api):
                 except OSError:
                     shutil.copyfile(copyfile, newfile)
                     os.remove(copyfile)
-            with open(os.path.join(bucket_dir, "files.txt"), 'w') as f:
+            with open(os.path.join(bucket_dir, "files.txt"), 'w', encoding="utf-8") as f:
                 for filename in filenames:
                     f.write(f"{filename}\n")
             return {"bucket_id": bucket_id, "files": filenames, "media": media}
@@ -561,13 +666,13 @@ class Backend_Api(Api):
         def upload_chat(share_id: str) -> dict:
             chat_data = {**request.json}
             updated = chat_data.get("updated", 0)
+            share_id = secure_filename(share_id)
             cache_value = self.chat_cache.get(share_id, 0)
             if updated == cache_value:
                 return {"share_id": share_id}
-            share_id = secure_filename(share_id)
             bucket_dir = get_bucket_dir(share_id)
             os.makedirs(bucket_dir, exist_ok=True)
-            with open(os.path.join(bucket_dir, "chat.json"), 'w') as f:
+            with open(os.path.join(bucket_dir, "chat.json"), 'w', encoding="utf-8") as f:
                 json.dump(chat_data, f)
             self.chat_cache[share_id] = updated
             return {"share_id": share_id}
@@ -593,19 +698,19 @@ class Backend_Api(Api):
 
     def get_provider_models(self, provider: str):
         api_key = request.headers.get("x-api-key")
-        api_base = request.headers.get("x-api-base")
         ignored = request.headers.get("x-ignored", "").split()
-        return super().get_provider_models(provider, api_key, api_base, ignored)
+        return super().get_provider_models(provider, api_key, ignored)
 
     def _format_json(self, response_type: str, content = None, **kwargs) -> str:
         """
-        Formats and returns a JSON response.
+        Formats and returns a SSE (Server-Sent Events) formatted JSON response.
 
         Args:
-            response_type (str): The type of the response.
+            response_type (str): The type of the response, used as the SSE event name.
             content: The content to be included in the response.
 
         Returns:
-            str: A JSON formatted string.
+            str: A SSE formatted string with event type and JSON data.
         """
-        return json.dumps(super()._format_json(response_type, content, **kwargs)) + "\n"
+        data = json.dumps(super()._format_json(response_type, content, **kwargs))
+        return f"event: {response_type}\ndata: {data}\n\n"

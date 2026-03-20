@@ -4,16 +4,19 @@ from typing import Optional
 from functools import partial
 from dataclasses import dataclass, field
 
-from pydantic_ai.models import Model, KnownModelName, infer_model
-from pydantic_ai.models.openai import OpenAIModel, OpenAISystemPromptRole
+from pydantic_ai import ModelResponsePart, ThinkingPart, ToolCallPart
+from pydantic_ai.models import Model, ModelResponse, KnownModelName, infer_model
+from pydantic_ai.usage import RequestUsage
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAISystemPromptRole, _now_utc, split_content_into_text_and_thinking, replace
 
 import pydantic_ai.models.openai
 pydantic_ai.models.openai.NOT_GIVEN = None
 
-from ..client import AsyncClient
+from ..client import AsyncClient, ChatCompletion
 
 @dataclass(init=False)
-class AIModel(OpenAIModel):
+class AIModel(OpenAIChatModel):
     """A model that uses the G4F API."""
 
     client: AsyncClient = field(repr=False)
@@ -29,7 +32,7 @@ class AIModel(OpenAIModel):
         provider: str | None = None,
         *,
         system_prompt_role: OpenAISystemPromptRole | None = None,
-        system: str | None = 'openai',
+        system: str | None = 'g4f',
         **kwargs
     ):
         """Initialize an AI model.
@@ -44,7 +47,7 @@ class AIModel(OpenAIModel):
                 customize the `base_url` and `api_key` to use a different provider.
         """
         self._model_name = model_name
-        self._provider = provider
+        self._provider = getattr(provider, '__name__', provider)
         self.client = AsyncClient(provider=provider, **kwargs)
         self.system_prompt_role = system_prompt_role
         self._system = system
@@ -53,6 +56,38 @@ class AIModel(OpenAIModel):
         if self._provider:
             return f'g4f:{self._provider}:{self._model_name}'
         return f'g4f:{self._model_name}'
+    
+    def _process_response(self, response: ChatCompletion | str) -> ModelResponse:
+        """Process a non-streamed response, and prepare a message to return."""
+        choice = response.choices[0]
+        items: list[ModelResponsePart] = []
+
+        if reasoning := getattr(choice.message, 'reasoning', None):
+            items.append(ThinkingPart(id='reasoning', content=reasoning, provider_name=self.system))
+
+        if choice.message.content:
+            items.extend(
+                (replace(part, id='content', provider_name=self.system) if isinstance(part, ThinkingPart) else part)
+                for part in split_content_into_text_and_thinking(choice.message.content, self.profile.thinking_tags)
+            )
+        if choice.message.tool_calls is not None:
+            for c in choice.message.tool_calls:
+                items.append(ToolCallPart(c.function.name, c.function.arguments, tool_call_id=c.id))
+        usage = RequestUsage(
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+        )
+
+        return ModelResponse(
+            parts=items,
+            usage=usage,
+            model_name=response.model,
+            timestamp=_now_utc(),
+            provider_details=None,
+            provider_response_id=response.id,
+            provider_name=self._provider,
+            finish_reason=choice.finish_reason,
+        )
 
 def new_infer_model(model: Model | KnownModelName, api_key: str = None) -> Model:
     if isinstance(model, Model):
@@ -69,4 +104,3 @@ def patch_infer_model(api_key: str | None = None):
     import pydantic_ai.models
 
     pydantic_ai.models.infer_model = partial(new_infer_model, api_key=api_key)
-    pydantic_ai.models.AIModel = AIModel

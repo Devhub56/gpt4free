@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import requests
+
 try:
     from PIL import Image, ImageOps
     has_requirements = True
@@ -107,6 +109,12 @@ def is_data_an_media(data, filename: str = None) -> str:
         return content_type
     if isinstance(data, bytes):
         return is_accepted_format(data)
+    if isinstance(data, str) and data.startswith(("http://", "https://")):
+        path = urlparse(data).path
+        extension = get_extension(path)
+        if extension is not None:
+            return EXTENSIONS_MAP[extension]
+        return "binary/octet-stream"
     return is_data_uri_an_image(data)
 
 def is_valid_media(data: ImageType = None, filename: str = None) -> str:
@@ -336,7 +344,6 @@ def process_image(image: Image.Image, new_width: int = 400, new_height: int = 40
         Image: The processed image.
     """
     image = ImageOps.exif_transpose(image)
-    image.thumbnail((new_width, new_height))
     # Remove transparency
     if image.mode == "RGBA":
         # image.load()
@@ -347,8 +354,11 @@ def process_image(image: Image.Image, new_width: int = 400, new_height: int = 40
     # Convert to RGB for jpg format
     elif image.mode != "RGB":
         image = image.convert("RGB")
+    image_size = image.size
+    image.thumbnail((new_width, new_height))
     if save is not None:
         image.save(save, exif=b"")
+        return image_size
     return image
 
 def to_bytes(image: ImageType) -> bytes:
@@ -375,6 +385,13 @@ def to_bytes(image: ImageType) -> bytes:
                     return Path(path).read_bytes()
                 else:
                     raise FileNotFoundError(f"File not found: {path}")
+            else:
+                resp = requests.get(image, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
+                })
+                if resp.ok and is_accepted_format(resp.content):
+                    return resp.content
+                raise ValueError("Invalid image url. Expected bytes, str, or PIL Image.")
         else:
             raise ValueError("Invalid image format. Expected bytes, str, or PIL Image.")
     elif isinstance(image, Image.Image):

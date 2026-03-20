@@ -13,19 +13,19 @@ from pathlib import Path
 from aiohttp import ClientSession, BaseConnector
 
 try:
-    import nodriver
+    import zendriver as nodriver
     has_nodriver = True
 except ImportError:
     has_nodriver = False
 
 from ... import debug
 from ...typing import Messages, Cookies, MediaListType, AsyncResult, AsyncIterator
-from ...providers.response import JsonConversation, Reasoning, RequestLogin, ImageResponse, YouTubeResponse, AudioResponse, TitleGeneration
+from ...providers.response import JsonConversation, Reasoning, RequestLogin, ImageResponse, YouTubeResponse, AudioResponse, TitleGeneration, JsonResponse
 from ...requests.raise_for_status import raise_for_status
 from ...requests.aiohttp import get_connector
 from ...requests import get_nodriver
 from ...image.copy_images import get_filename, get_media_dir, ensure_media_dir
-from ...errors import MissingAuthError, ModelNotFoundError
+from ...errors import MissingAuthError
 from ...image import to_bytes
 from ...cookies import get_cookies_dir
 from ...tools.media import merge_media
@@ -71,6 +71,7 @@ models = {
     "gemini-2.0-flash-thinking": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"9c17b1863f581b8a"]'},
     "gemini-2.0-flash-thinking-with-apps": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"f8f8f5ea629f5d37"]'},
     # Currently used models
+    "gemini-3-pro": {"x-goog-ext-525001261-jspb": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]'},
     "gemini-2.5-pro": {"x-goog-ext-525001261-jspb": '[1,null,null,null,"61530e79959ab139",null,null,null,[4]]'},
     "gemini-2.5-flash": {"x-goog-ext-525001261-jspb": '[1,null,null,null,"9ec249fc9ad08861",null,null,null,[4]]'},
     "gemini-audio": {}
@@ -82,6 +83,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
     
     needs_auth = True
     working = True
+    active_by_default = True
     use_nodriver = True
     
     default_model = ""
@@ -89,7 +91,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
     default_vision_model = default_model
     image_models = [default_image_model]
     models = [
-        default_model, "gemini-2.5-flash", "gemini-2.5-pro"
+        default_model, "gemini-3-pro", "gemini-2.5-flash", "gemini-2.5-pro"
     ]
 
     synthesize_content_type = "audio/vnd.wav"
@@ -99,7 +101,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
     _sid: str = None
 
     auto_refresh = True
-    refresh_interval = 540
+    refresh_interval = 60 * 15  # 15 minutes
     rotate_tasks = {}
 
     @classmethod
@@ -118,7 +120,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
             await page.close()
             cls._cookies = cookies
         finally:
-            stop_browser()
+            await stop_browser()
 
     @classmethod
     async def start_auto_refresh(cls, proxy: str = None) -> None:
@@ -243,12 +245,14 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
                                 continue
                             if not isinstance(line, list):
                                 continue
-                            if len(line[0]) < 3 or not line[0][2]:
+                            yield JsonResponse(data=line, model=model)
+                            if not line or len(line[0]) < 3 or not line[0][2]:
                                 continue
                             response_part = json.loads(line[0][2])
-                            if response_part[10]:
-                                yield TitleGeneration(response_part[10][0].strip())
-                            if not response_part[4]:
+                            yield JsonResponse(data=response_part, model=model)
+                            if len(response_part) > 2 and isinstance(response_part[2], dict) and response_part[2].get("11"):
+                                yield TitleGeneration(response_part[2].get("11"))
+                            if len(response_part) < 5:
                                 continue
                             if return_conversation:
                                 yield Conversation(response_part[1][0], response_part[1][1], response_part[4][0][0], model)
@@ -269,20 +273,23 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
                                         skip -= 1
                                         continue
                                     yield item
-                            reasoning = "\n\n".join(find_str(response_part[4][0], 3))
-                            reasoning = re.sub(r"<b>|</b>", "**", reasoning)
-                            def replace_image(match):
-                                return f"![](https:{match.group(0)})"
-                            reasoning = re.sub(r"//yt3.(?:ggpht.com|googleusercontent.com/ytc)/[\w=-]+", replace_image, reasoning)
-                            reasoning = re.sub(r"\nyoutube\n", "\n\n\n", reasoning)
-                            reasoning = re.sub(r"\nyoutube_tool\n", "\n\n", reasoning)
-                            reasoning = re.sub(r"\nYouTube\n", "\nYouTube ", reasoning)
-                            reasoning = reasoning.replace('\nhttps://www.gstatic.com/images/branding/productlogos/youtube/v9/192px.svg', '<i class="fa-brands fa-youtube"></i>')
-                            youtube_ids = list(find_youtube_ids(reasoning))
-                            content = response_part[4][0][1][0]
-                            if reasoning:
-                                yield Reasoning(reasoning, status="🤔")
+                            if response_part[4]:
+                                reasoning = "\n\n".join(find_str(response_part[4][0], 3))
+                                reasoning = re.sub(r"<b>|</b>", "**", reasoning)
+                                def replace_image(match):
+                                    return f"![](https:{match.group(0)})"
+                                reasoning = re.sub(r"//yt3.(?:ggpht.com|googleusercontent.com/ytc)/[\w=-]+", replace_image, reasoning)
+                                reasoning = re.sub(r"\nyoutube\n", "\n\n\n", reasoning)
+                                reasoning = re.sub(r"\nyoutube_tool\n", "\n\n", reasoning)
+                                reasoning = re.sub(r"\nYouTube\n", "\nYouTube ", reasoning)
+                                reasoning = reasoning.replace('\nhttps://www.gstatic.com/images/branding/productlogos/youtube/v9/192px.svg', '<i class="fa-brands fa-youtube"></i>')
+                                youtube_ids = list(find_youtube_ids(reasoning))
+                                content = response_part[4][0][1][0]
+                                if reasoning:
+                                    yield Reasoning(reasoning, status="🤔")
                         except (ValueError, KeyError, TypeError, IndexError) as e:
+                            if kwargs.get("debug_mode", False):
+                                raise e
                             debug.error(f"{cls.__name__} {type(e).__name__}: {e}")
                             continue
                         match = re.search(r'\[Imagen of (.*?)\]', content)
@@ -412,15 +419,22 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
 
     @classmethod
     async def fetch_snlm0e(cls, session: ClientSession, cookies: Cookies):
+        response_text = ""
         async with session.get(cls.url, cookies=cookies) as response:
-            await raise_for_status(response)
-            response_text = await response.text()
+            if response.ok:
+                response_text = await response.text()
         match = re.search(r'SNlM0e\":\"(.*?)\"', response_text)
         if match:
             cls._snlm0e = match.group(1)
         sid_match = re.search(r'"FdrFJe":"([\d-]+)"', response_text)
         if sid_match:
             cls._sid = sid_match.group(1)
+            cls.active_by_default = True
+            cls.live += 1
+        else:
+            cls.active_by_default = False
+            cls.live = 0
+            await raise_for_status(response)
 
 class Conversation(JsonConversation):
     def __init__(self,

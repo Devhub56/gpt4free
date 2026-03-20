@@ -14,7 +14,7 @@ INSTALL_REQUIRE = [
     "aiohttp",
     "brotli",
     "pycryptodome",
-    "nest_asyncio",
+    "nest-asyncio2",
 ]
 
 EXTRA_REQUIRE = {
@@ -28,7 +28,8 @@ EXTRA_REQUIRE = {
         "aiohttp_socks",           # proxy
         "pillow",                  # image
         "cairosvg",                # svg image
-        "werkzeug", "flask",       # gui
+        "werkzeug",
+        "flask[async]",            # gui
         "fastapi",                 # api
         "uvicorn",                 # api
         "nodriver",
@@ -37,7 +38,10 @@ EXTRA_REQUIRE = {
         "setuptools",
         "markitdown[all]",
         "python-dotenv",
-        "aiofile"
+        "aiofile",
+        "cloudscraper",
+        "wasmtime",
+        "numpy"
     ],
     'slim': [
         "curl_cffi>=0.6.2",
@@ -47,7 +51,8 @@ EXTRA_REQUIRE = {
         "beautifulsoup4", # web_search and bing.create_images
         "aiohttp_socks",           # proxy
         "pillow",                  # image
-        "werkzeug", "flask",       # gui
+        "werkzeug",
+        "flask[async]",            # gui
         "fastapi",                 # api
         "uvicorn",                 # api
         "nodriver",
@@ -56,7 +61,8 @@ EXTRA_REQUIRE = {
         "pypdf2",
         "python-docx",
         "python-dotenv",
-        "aiofile"
+        "aiofile",
+        "cloudscraper"
     ],
     "image": [
         "pillow",
@@ -76,7 +82,7 @@ EXTRA_REQUIRE = {
         "a2wsgi",
     ],
     "gui": [
-        "werkzeug", "flask",
+        "werkzeug", "flask[async]",
         "beautifulsoup4", "pillow",
     ],
     "search": [
@@ -114,7 +120,10 @@ setup(
     install_requires=INSTALL_REQUIRE,
     extras_require=EXTRA_REQUIRE,
     entry_points={
-        'console_scripts': ['g4f=g4f.cli:main'],
+        'console_scripts': [
+            'g4f=g4f.cli:main',
+            'g4f-mcp=g4f.mcp.server:main',
+        ],
     },
     url='https://github.com/xtekky/gpt4free',  # Link to your GitHub repository
     project_urls={

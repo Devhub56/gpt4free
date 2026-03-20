@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import uuid
 import asyncio
 import base64
 import random
@@ -17,7 +18,7 @@ try:
 except ImportError:
     has_curl_cffi = False
 try:
-    import nodriver
+    import zendriver as nodriver
     has_nodriver = True
 except ImportError:
     has_nodriver = False
@@ -99,7 +100,7 @@ class Copilot(AsyncAuthedProvider, ProviderModelMixin):
     @classmethod
     async def on_auth_async(cls, cookies: dict = None, proxy: str = None, **kwargs) -> AsyncIterator:
         if cookies is None:
-            cookies = get_cookies(cls.cookie_domain, False, cache_result=False)
+            cookies = get_fake_cookie() or get_cookies(cls.cookie_domain, False, cache_result=False)
         access_token = None
         useridentitytype = None
         if cls.needs_auth or cls.anon_cookie_name not in cookies:
@@ -135,7 +136,7 @@ class Copilot(AsyncAuthedProvider, ProviderModelMixin):
         if not has_curl_cffi:
             raise MissingRequirementsError('Install or update "curl_cffi" package | pip install -U curl_cffi')
         model = cls.get_model(model)
-        websocket_url = cls.websocket_url
+        websocket_url = cls.websocket_url + f"&clientSessionId={uuid.uuid4()}"
         headers = DEFAULT_HEADERS.copy()
         headers["origin"] = cls.url
         headers["referer"] = cls.url + "/"
@@ -191,7 +192,7 @@ class Copilot(AsyncAuthedProvider, ProviderModelMixin):
                 response.raise_for_status()
                 debug.log(f"Copilot: Update cookies: [{', '.join(key for key in response.cookies)}]")
                 auth_result.cookies.update({key: value for key, value in response.cookies.items()})
-                if not cls.needs_auth and cls.anon_cookie_name not in auth_result.cookies:
+                if not getattr(auth_result, "access_token", None) and not cls.needs_auth and cls.anon_cookie_name not in auth_result.cookies:
                     raise MissingAuthError(f"Missing cookie: {cls.anon_cookie_name}")
                 conversation = Conversation(response.json().get("currentConversationId"))
                 debug.log(f"Copilot: Created conversation: {conversation.conversation_id}")
@@ -284,9 +285,9 @@ class Copilot(AsyncAuthedProvider, ProviderModelMixin):
             sources = {}
             while not wss.closed:
                 try:
-                    msg_txt, _ = await asyncio.wait_for(wss.recv(), 3 if done else timeout)
+                    msg_txt, _ = await asyncio.wait_for(wss.recv(), 1 if done else timeout)
                     msg = json.loads(msg_txt)
-                except:
+                except Exception:
                     break
                 last_msg = msg
                 if msg.get("event") == "appendText":
@@ -360,30 +361,44 @@ async def get_access_token_and_cookies(url: str, proxy: str = None, needs_auth: 
                 debug.log(f"Got access token: {access_token[:10]}..., useridentitytype: {useridentitytype}")
                 break
             if not needs_auth:
+                debug.log("No access token found, but authentication not required.")
                 break
         if not needs_auth:
-            textarea = await page.select("textarea")
+            try:
+                textarea = await page.select("textarea")
+            except TimeoutError:
+                textarea = None
             if textarea is not None:
+                debug.log("Filling textarea to generate anon cookie.")
                 await textarea.send_keys("Hello")
                 await asyncio.sleep(1)
-                button = await page.select("[data-testid=\"submit-button\"]")
+                try:
+                    button = await page.select("[data-testid=\"submit-button\"]")
+                except TimeoutError:
+                    button = None
                 if button:
+                    debug.log("Clicking submit button to generate anon cookie.")
                     await button.click()
-                    turnstile = await page.select('#cf-turnstile', 300)
+                    try:
+                        turnstile = await page.select('#cf-turnstile')
+                    except TimeoutError:
+                        turnstile = None
                     if turnstile:
                         debug.log("Found Element: 'cf-turnstile'")
                         await asyncio.sleep(3)
                         await click_trunstile(page)
         cookies = {}
-        while Copilot.anon_cookie_name not in cookies:
+        while not access_token and Copilot.anon_cookie_name not in cookies:
             await asyncio.sleep(2)
             cookies = {c.name: c.value for c in await page.send(nodriver.cdp.network.get_cookies([url]))}
             if not needs_auth and Copilot.anon_cookie_name in cookies:
                 break
-        stop_browser()
+            elif needs_auth and next(filter(lambda x: "auth0" in x, cookies), None):
+                break
+        await stop_browser()
         return access_token, useridentitytype, cookies
     finally:
-        stop_browser()
+        await stop_browser()
 
 def readHAR(url: str):
     api_key = None

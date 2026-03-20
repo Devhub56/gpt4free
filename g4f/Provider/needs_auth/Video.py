@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import asyncio
 from typing import Optional
 from aiohttp import ClientSession, ClientTimeout
@@ -8,15 +9,15 @@ from urllib.parse import quote, quote_plus
 from aiohttp import ClientSession
 
 try:
-    import nodriver
-    from nodriver.core.connection import ProtocolException
-except:
-    pass
+    import zendriver as nodriver
+    from zendriver.core.connection import ProtocolException
+    has_nodriver = True
+except Exception:
+    has_nodriver = False
 
 from ...typing import Messages, AsyncResult
 from ...providers.response import VideoResponse, Reasoning, ContinueResponse, ProviderInfo
 from ...requests import get_nodriver
-from ...errors import MissingRequirementsError
 from ..base_provider import AsyncGeneratorProvider, ProviderModelMixin
 from ..helper import format_media_prompt
 from ... import debug
@@ -53,7 +54,7 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
         "sora": "https://sora.chatgpt.com/explore",
         #"veo": "https://aistudio.google.com/generate-video"
     }
-    api_url = f"{PUBLIC_URL}/backend-api/v2/create?provider=Video&cache=true&prompt="
+    api_path = f"?provider=Video&cache=true&prompt="
     drive_url = "https://www.googleapis.com/drive/v3/"
 
     active_by_default = True
@@ -62,10 +63,11 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
     video_models = models
 
     needs_auth = True
-    working = True
+    working = has_nodriver
 
     browser = None
     stop_browser = None
+    share_url: Optional[str] = None
 
     @classmethod
     async def create_async_generator(
@@ -77,6 +79,8 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
         aspect_ratio: str = None,
         **kwargs
     ) -> AsyncResult:
+        if cls.share_url is None:
+            cls.share_url = os.getenv("G4F_SHARE_URL")
         if not model:
             model = cls.default_model
         if model not in cls.video_models:
@@ -94,10 +98,12 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
             yield Reasoning(label="Open browser")
             browser, stop_browser = await get_nodriver(proxy=proxy)
         except Exception as e:
+            if cls.share_url is None:
+                raise
             debug.error(f"Error getting nodriver:", e)
             async with ClientSession() as session:
                 yield Reasoning(label="Generating")
-                async with session.get(cls.api_url + quote(prompt)) as response:
+                async with session.get(f"{cls.share_url}{cls.api_path + quote(prompt)}") as response:
                     if not response.ok:
                         debug.error(f"Failed to generate Video: {response.status}")
                     else:
@@ -108,13 +114,13 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
                             return
                         yield VideoResponse(str(response.url), prompt)
                         return
-            raise MissingRequirementsError("Video provider requires a browser to be installed.")
+            raise
         page = None
         try:
             yield ContinueResponse("Timeout waiting for Video URL")
             page = await browser.get(cls.urls[model].format(quote(prompt)))
         except Exception as e:
-            stop_browser()
+            await stop_browser()
             debug.error(f"Error opening page:", e)
         if prompt not in RequestConfig.urls:
             RequestConfig.urls[prompt] = []
@@ -123,7 +129,7 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
                 RequestConfig.headers = {}
                 for key, value in event.request.headers.items():
                     RequestConfig.headers[key.lower()] = value
-                for _, urls in RequestConfig.urls.items():
+                for urls in RequestConfig.urls.values():
                     if event.request.url in urls:
                         return
                 debug.log(f"Adding URL: {event.request.url}")
@@ -135,7 +141,7 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
             if button:
                 break
             if idx == 299:
-                stop_browser()
+                await stop_browser()
                 raise RuntimeError("Failed to wait for user menu.")
         if model == "search" and page is not None:
             await page.send(nodriver.cdp.network.enable())
@@ -145,7 +151,7 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
                 await asyncio.sleep(1)
         response = await RequestConfig.get_response(prompt, True)
         if response:
-            stop_browser()
+            await stop_browser()
             yield Reasoning(label="Found", status="")
             yield response
             return
@@ -223,7 +229,7 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
                     if idx == 59:
                         debug.error(e)
                 if idx == 59:
-                    stop_browser()
+                    await stop_browser()
                     raise RuntimeError("Failed to click 'New Video' button")
             await asyncio.sleep(3)
             if model != "search" and page is not None:
@@ -236,12 +242,12 @@ class Video(AsyncGeneratorProvider, ProviderModelMixin):
                     await asyncio.sleep(2)
                     response = await RequestConfig.get_response(prompt, model=="search")
                     if response:
-                        stop_browser()
+                        await stop_browser()
                         yield Reasoning(label="Finished", status="")
                         yield response
                         return
                 if idx == 299:
-                    stop_browser()
+                    await stop_browser()
                     raise RuntimeError("Failed to get Video URL")
         finally:
-            stop_browser()
+            await stop_browser()

@@ -3,12 +3,12 @@ pycryptodome
 curl_cffi>=0.6.2
 aiohttp
 certifi
-nest_asyncio
+nest-asyncio2
 werkzeug
 pillow
 fastapi
 uvicorn
-flask
+flask[async]
 brotli
 beautifulsoup4
 aiohttp_socks
@@ -18,3 +18,4 @@ markitdown[all]
 a2wsgi
 python-dotenv
 ddgs
+cloudscraper

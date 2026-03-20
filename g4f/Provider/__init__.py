@@ -13,10 +13,6 @@ try:
 except ImportError as e:
     debug.error("MiniMax providers not loaded:", e)
 try:
-    from .not_working import *
-except ImportError as e:
-    debug.error("Not working providers not loaded:", e)
-try:
     from .local import *
 except ImportError as e:
     debug.error("Local providers not loaded:", e)
@@ -35,19 +31,17 @@ except ImportError as e:
 
 from .template import OpenaiTemplate, BackendApi
 from .qwen.QwenCode import QwenCode
-from .deprecated.ARTA import ARTA
-from .deprecated.Blackbox import Blackbox
-from .deprecated.DuckDuckGo import DuckDuckGo
-from .deprecated.Kimi import Kimi
-from .deprecated.PerplexityLabs import PerplexityLabs
 
 from .ApiAirforce          import ApiAirforce
 from .Chatai               import Chatai
 from .Cloudflare           import Cloudflare
 from .Copilot              import Copilot
+from .CopilotSession       import CopilotSession
 from .DeepInfra            import DeepInfra
 from .EasyChat             import EasyChat
 from .GLM                  import GLM
+from .GradientNetwork      import GradientNetwork
+from .ItalyGPT             import ItalyGPT
 from .LambdaChat           import LambdaChat
 from .Mintlify             import Mintlify
 from .OIVSCodeSer          import OIVSCodeSer2, OIVSCodeSer0501
@@ -55,9 +49,7 @@ from .OperaAria            import OperaAria
 from .Perplexity           import Perplexity
 from .PollinationsAI       import PollinationsAI
 from .PollinationsImage    import PollinationsImage
-from .Startnest            import Startnest
 from .Qwen                 import Qwen
-from .StringableInference  import StringableInference
 from .TeachAnything        import TeachAnything
 from .WeWordle             import WeWordle
 from .Yqcloud              import Yqcloud
@@ -83,3 +75,17 @@ __map__: dict[str, ProviderType] = {
 
 class ProviderUtils:
     convert: dict[str, ProviderType] = __map__
+
+    @classmethod
+    def get_by_label(cls, label: str) -> ProviderType:
+        if not label:
+            raise ValueError("Label must be provided")
+        provider = cls.convert.get(label)
+        if provider is None:
+            for provider_cls in cls.convert.values():
+                if provider_cls.working and provider_cls.__name__.lower().startswith(label.lower()):
+                    provider = provider_cls
+                    break
+        if provider is None:
+            raise ValueError(f"Provider with label '{label}' not found")
+        return provider

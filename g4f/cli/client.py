@@ -10,7 +10,7 @@ import requests
 
 from pathlib import Path
 from typing import Optional, List, Dict
-from g4f.client import AsyncClient
+from g4f.client import AsyncClient, ClientFactory
 from g4f.providers.response import JsonConversation, MediaResponse, is_content
 from g4f.cookies import set_cookies_dir, read_cookie_files
 from g4f.Provider import ProviderUtils
@@ -152,14 +152,15 @@ async def stream_response(
             print(f"\n→ Response saved to '{output_file}'")
 
     if text_response:
-        conversation.add_message("assistant", text_response)
+        if not media_chunk:
+            conversation.add_message("assistant", text_response)
     else:
         raise RuntimeError("No response received")
 
 
 def save_content(content, media: Optional[MediaResponse], filepath: str, allowed_types=None) -> bool:
     if media:
-        for url in media.urls:
+        for url in media.get_list():
             if url.startswith(("http://", "https://")):
                 try:
                     resp = requests.get(url, cookies=media.get("cookies"), headers=media.get("headers"))
@@ -252,7 +253,14 @@ async def run_args(input_val, args):
         set_cookies_dir(str(args.cookies_dir))
         read_cookie_files()
 
-        client = AsyncClient(provider=conv.provider)
+        client = ClientFactory.create_async_client(provider=conv.provider)
+
+        if input_val == "models":
+            models = client.models.get_all()
+            print("\nAvailable models:")
+            for m in models:
+                print(f"- {m}")
+            return
 
         if isinstance(args.edit, Path):
             file_to_edit = args.edit
