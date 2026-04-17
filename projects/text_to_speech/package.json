@@ -2,7 +2,7 @@
   "main": "index.js",
   "dependencies": {
     "@xenova/transformers": "^2.16.1",
-    "webpack": "^5.99.9",
+    "webpack": "^5.106.2",
     "webpack-node-externals": "^3.0.0"
   },
   "bundledDependencies": [
